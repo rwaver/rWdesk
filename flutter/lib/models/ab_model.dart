@@ -138,85 +138,50 @@ class AbModel {
     _pulling = false;
     _pulledOnce = true;
   }
-
   Future<void> _pullAb(
       {required ForcePullAb? force, required bool quiet}) async {
     if (force == null && listInitialized && current.initialized) return;
-    debugPrint("pullAb, force: $force, quiet: $quiet");
-    if (!listInitialized || force == ForcePullAb.listAndCurrent) {
-      try {
-        // Read personal guid every time to avoid upgrading the server without closing the main window
-        _personalAbGuid = null;
-        // `true`: continue init. `false`: stop, error already recorded.
-        if (!await _getPersonalAbGuid(quiet: quiet)) {
-          return;
-        }
-        legacyMode.value = _personalAbGuid == null;
-        if (!legacyMode.value && _maxPeerOneAb == 0) {
-          await _getAbSettings(quiet: quiet);
-        }
-        if (_personalAbGuid != null) {
-          debugPrint("pull ab list");
-          List<AbProfile> abProfiles = List.empty(growable: true);
-          abProfiles.add(AbProfile(_personalAbGuid!, _personalAddressBookName,
-              gFFI.userModel.userName.value, null, ShareRule.read.value, null));
-          // get all address book name
-          await _getSharedAbProfiles(abProfiles, quiet: quiet);
-          addressbooks.removeWhere((key, value) =>
-              abProfiles.firstWhereOrNull((e) => e.name == key) == null);
-          for (int i = 0; i < abProfiles.length; i++) {
-            AbProfile p = abProfiles[i];
-            if (addressbooks.containsKey(p.name)) {
-              addressbooks[p.name]?.setSharedProfile(p);
-            } else {
-              addressbooks[p.name] = Ab(p, p.guid == _personalAbGuid);
-            }
-          }
-        } else {
-          // only legacy address book
-          addressbooks
-              .removeWhere((key, value) => key != _legacyAddressBookName);
-          if (!addressbooks.containsKey(_legacyAddressBookName)) {
-            addressbooks[_legacyAddressBookName] = LegacyAb();
-          }
-        }
-        // set current address book name
-        if (!listInitialized) {
-          listInitialized = true;
-          trySetCurrentToLast();
-        }
-        if (!addressbooks.containsKey(_currentName.value)) {
-          setCurrentName(legacyMode.value
-              ? _legacyAddressBookName
-              : _personalAddressBookName);
-        }
-        // pull current address book
-        await current.pullAb(quiet: quiet);
-        // try initialize personal address book
-        if (!current.isPersonal()) {
-          final personalAb = addressbooks[_personalAddressBookName];
-          if (personalAb != null && !personalAb.initialized) {
-            await personalAb.pullAb(quiet: quiet);
-          }
-        }
-      } catch (e) {
-        debugPrint("pull ab list error: $e");
-        _setListPullError(e, quiet: quiet);
+    debugPrint("pullAb custom SQLite, force: $force, quiet: $quiet");
+    try {
+      legacyMode.value = true;
+      if (!addressbooks.containsKey(_legacyAddressBookName)) {
+        addressbooks[_legacyAddressBookName] = LegacyAb();
       }
-    } else if (listInitialized &&
-        (!current.initialized || force == ForcePullAb.current)) {
-      try {
-        await current.pullAb(quiet: quiet);
-      } catch (e) {
-        debugPrint("pull current Ab error: $e");
+      if (!listInitialized) {
+        listInitialized = true;
+        setCurrentName(_legacyAddressBookName);
       }
+
+      final username = gFFI.userModel.userName.value;
+      final resp = await http.get(
+        Uri.parse('http://100.94.25'),
+      );
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final List friends = data['friends'] ?? [];
+        current.peers.clear();
+        for (var f in friends) {
+          current.peers.add(Peer.fromJson({
+            'id': f['peer_id'] ?? '',
+            'alias': f['alias'] ?? f['peer_id'] ?? '',
+            'password': f['saved_password'] ?? '',
+            'platform': 'Windows',
+          }));
+        }
+        current.initialized = true;
+        current.abLoading.value = false;
+      }
+    } catch (e) {
+      debugPrint("pull custom SQLite error: $e");
+      _setListPullError(e, quiet: quiet);
     }
+
     _callbackPeerUpdate();
     if (listInitialized && current.initialized) {
       _saveCache();
     }
   }
-
   void _setListPullError(Object err, {required bool quiet, int? statusCode}) {
     if (!quiet) {
       _listPullError.value =
